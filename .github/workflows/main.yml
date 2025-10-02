@@ -53,11 +53,12 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: |
+        
           # 创建.env文件，但不再包含Cookie
           echo "NOTION_API_KEY=${{ secrets.NOTION_API_KEY }}" > .env
           echo "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}" >> .env
           
-          python aixtonotion.py
+          python xtonotionai.py
 
       # --- 新增：上传新的登录态到Supabase ---
       - name: Upload new storage state to Supabase
