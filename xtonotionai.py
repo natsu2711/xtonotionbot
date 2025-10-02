@@ -17,7 +17,6 @@ load_dotenv()
 # --- 配置区 ---
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-CHROME_DEBUG_PORT = 9222
 PROCESSED_TWEETS = set()
 
 # === 核心配置 ===
@@ -121,14 +120,28 @@ async def scrape_main_timeline():
     """主函数，采用实时流处理逻辑"""
     processed_count = 0
     async with async_playwright() as p:
+        browser = None # 在try块外部定义browser
+        context = None # 在try块外部定义context
         try:
-            browser = await p.chromium.connect_over_cdp(f"http://localhost:{CHROME_DEBUG_PORT}")
-            context = browser.contexts[0]
-            page = context.pages[0]
-            print("✅ Successfully connected to the existing Chrome instance.")
+            # --- 云端启动逻辑 ---
+            browser = await p.chromium.launch(headless=True)
+            
+            # 尝试从本地文件加载 "记忆胶囊"
+            try:
+                context = await browser.new_context(storage_state="storage_state.json")
+                print("✅ Launched new browser instance in cloud and loaded existing storage_state.json.")
+            except FileNotFoundError:
+                print("⚠️ storage_state.json not found. Creating a new context. A new state will be saved at the end.")
+                context = await browser.new_context()
+
+            page = await context.new_page()
+            
         except Exception as e:
-            print(f"❌ ERROR: Could not connect to Chrome on port {CHROME_DEBUG_PORT}.")
+            print(f"❌ FATAL ERROR during browser setup in cloud: {type(e).__name__} - {e}")
+            if browser:
+                await browser.close()
             return
+
 
         await page.goto("https://x.com", wait_until="domcontentloaded", timeout=60000)
         print(f"--- Navigated to main timeline. Goal: {DAILY_GOAL} summaries. ---")
@@ -194,6 +207,16 @@ async def scrape_main_timeline():
                             print("  - INFO: Failed to get summary from grok.com, moving to next tweet.")
                 except Exception as e:
                     continue
+        
+        finally:
+            # --- 确保最后保存状态并关闭浏览器 ---
+            if context:
+                print("\n--- Saving updated storage state... ---")
+                await context.storage_state(path="storage_state.json")
+                print("--- Updated storage state saved to storage_state.json. ---")
+            if browser:
+                await browser.close()
+                print("--- Browser closed. ---")
     
     print(f"\n--- Script finished. Total summaries collected: {processed_count} ---")
 

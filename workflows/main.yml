@@ -1,0 +1,88 @@
+name: X to Notion Bot (with Supabase State)
+
+on:
+  schedule:
+    - cron: '0 1,9,15 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: python -m playwright install --with-deps chromium
+
+      # --- 新增：从Supabase下载登录态 ---
+      - name: Download previous storage state from Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          # 使用一个小的Python脚本来下载文件
+          python -c "
+          import os
+          from supabase import create_client, Client
+
+          url = os.environ.get('SUPABASE_URL')
+          key = os.environ.get('SUPABASE_KEY')
+          supabase: Client = create_client(url, key)
+          
+          try:
+              with open('storage_state.json', 'wb+') as f:
+                  res = supabase.storage.from_('playwright-state').download('storage_state.json')
+                  f.write(res)
+              print('✅ Successfully downloaded storage_state.json from Supabase.')
+          except Exception as e:
+              print(f'⚠️ Could not download storage_state.json (maybe first run?): {e}')
+          "
+
+      # --- 运行主脚本 ---
+      - name: Run the scraper script
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          # 创建.env文件，但不再包含Cookie
+          echo "NOTION_API_KEY=${{ secrets.NOTION_API_KEY }}" > .env
+          echo "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}" >> .env
+          
+          python aixtonotion.py
+
+      # --- 新增：上传新的登录态到Supabase ---
+      - name: Upload new storage state to Supabase
+        if: always() # 确保即使脚本失败也尝试上传
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "
+          import os
+          from supabase import create_client, Client
+
+          url = os.environ.get('SUPABASE_URL')
+          key = os.environ.get('SUPABASE_KEY')
+          supabase: Client = create_client(url, key)
+          
+          try:
+              with open('storage_state.json', 'rb') as f:
+                  # 'file_options': {'cache-control': '3600', 'upsert': 'true'} 表示如果文件已存在，则覆盖它
+                  supabase.storage.from_('playwright-state').upload(
+                      'storage_state.json', 
+                      f, 
+                      {'cache-control': '3600', 'upsert': 'true'}
+                  )
+              print('✅ Successfully uploaded new storage_state.json to Supabase.')
+          except Exception as e:
+              print(f'❌ Failed to upload storage_state.json: {e}')
+          "
