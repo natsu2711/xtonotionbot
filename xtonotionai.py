@@ -20,8 +20,8 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 PROCESSED_TWEETS = set()
 
 # === 核心配置 ===
-LIKE_THRESHOLD = 800
-REPOST_THRESHOLD = 50
+LIKE_THRESHOLD = 10
+REPOST_THRESHOLD = 5
 LIKE_PROBABILITY = 0.6
 TOTAL_SCROLLS = 20 
 CUSTOM_EXPLAIN_PROMPT = "请对以下推文进行深度剖析，输出总长度不得超过2000字,用中文回答。回答需严格按照以下结构：1. 摘要：用300字以内高度概括推文的本质观点和核心矛盾。2. 核心知识点（3–5条）：只保留与推文主题最紧密相关的知识点，每条≤100字。3. 核心问题（2–4条）：列出推文背后真正要解决的关键矛盾，每条≤100字。4. 业务运作全流程（4–6步）：用简明步骤展示该问题在真实情境中的运行逻辑。然后，仅选择最重要的2个知识点和2个核心问题，逐一进行“四层次深度剖析：第一性原理：指出该领域稳定不变的通用法则，解释其矛盾与盲点，可引用经典书籍/论文。模型：给出基于原理的结构化框架或算法（简化、可度量、可演算）。操作：写出4–6步的流程化实施方案，解释每步的原因，并用贴切类比帮助理解。经验：提供一个真实案例或故事，展示执行后的反馈与复盘。要求：  全文≤2000字，必要时优先保留“摘要 > 核心问题 > 第一性原理 > 模型”。  使用纯文本输出，不允许出现任何 Markdown 格式符号（例如 ###、**、-、•）。避免赘述与重复，不要输出客套话，不要多余元信息。输出风格要简洁凝练，但思想深刻。"
@@ -171,7 +171,8 @@ async def scrape_main_timeline():
                         repost_text = await repost_locator.inner_text() if await repost_locator.count() > 0 else ""
                         like_count = parse_count(like_text)
                         repost_count = parse_count(repost_text)
-
+                        #新增调试日志
+                        print(f"  - [DEBUG] Checking tweet: {tweet_url} (Likes: {like_count}, Reposts: {repost_count})")
                         if like_count > LIKE_THRESHOLD or repost_count > REPOST_THRESHOLD:
                             print(f"\n  -> Found high-value tweet: {tweet_url} (Likes: {like_count}, Reposts: {repost_count})")
                             PROCESSED_TWEETS.add(tweet_url)
