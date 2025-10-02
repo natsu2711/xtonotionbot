@@ -116,109 +116,109 @@ async def get_summary_from_grok_site(context, tweet_url) -> Union[str , None]:
             print("    - ACTION: Closed grok.com tab.")
 
 
+# === 修正语法的 scrape_main_timeline 函数 ===
 async def scrape_main_timeline():
-    """主函数，采用实时流处理逻辑"""
+    """主函数，适配云端环境，采用实时流处理逻辑，并持久化登录状态"""
     processed_count = 0
+    browser = None
+    context = None
     async with async_playwright() as p:
-        browser = None # 在try块外部定义browser
-        context = None # 在try块外部定义context
         try:
-            # --- 云端启动逻辑 ---
+            # --- 浏览器和上下文的设置 ---
             browser = await p.chromium.launch(headless=True)
-            
-            # 尝试从本地文件加载 "记忆胶囊"
             try:
                 context = await browser.new_context(storage_state="storage_state.json")
-                print("✅ Launched new browser instance in cloud and loaded existing storage_state.json.")
+                print("✅ Launched browser and loaded existing storage_state.json.")
             except FileNotFoundError:
-                print("⚠️ storage_state.json not found. Creating a new context. A new state will be saved at the end.")
+                print("⚠️ storage_state.json not found. Creating a new context.")
                 context = await browser.new_context()
-
-            page = await context.new_page()
             
-        except Exception as e:
-            print(f"❌ FATAL ERROR during browser setup in cloud: {type(e).__name__} - {e}")
-            if browser:
-                await browser.close()
-            return
+            page = await context.new_page()
 
+            # --- 核心抓取逻辑 ---
+            await page.goto("https://x.com", wait_until="domcontentloaded", timeout=60000)
+            print(f"--- Navigated to main timeline. Goal: {DAILY_GOAL} summaries. ---")
 
-        await page.goto("https://x.com", wait_until="domcontentloaded", timeout=60000)
-        print(f"--- Navigated to main timeline. Goal: {DAILY_GOAL} summaries. ---")
+            for i in range(TOTAL_SCROLLS):
+                if processed_count >= DAILY_GOAL:
+                    print(f"\n🎉 Daily goal of {DAILY_GOAL} summaries reached. Halting script.")
+                    break
 
-        for i in range(TOTAL_SCROLLS):
-            if processed_count >= DAILY_GOAL:
-                print(f"\n🎉 Daily goal of {DAILY_GOAL} summaries reached. Halting script.")
-                break
+                print(f"\n--- Scrolling... Round {i+1}/{TOTAL_SCROLLS} ---")
+                await page.mouse.wheel(0, 8000)
+                await asyncio.sleep(4)
 
-            print(f"\n--- Scrolling... Round {i+1}/{TOTAL_SCROLLS} ---")
-            await page.mouse.wheel(0, 8000)
-            await asyncio.sleep(4)
+                articles = page.locator('article[data-testid="tweet"]')
+                count = await articles.count()
+                print(f"  - Found {count} potential tweets on the page.")
 
-            articles = page.locator('article[data-testid="tweet"]')
-            count = await articles.count()
-            print(f"  - Found {count} potential tweets on the page.")
-
-            for i in range(count):
-                if processed_count >= DAILY_GOAL: break
-                
-                article = articles.nth(i)
-                try:
-                    link_locator = article.locator("a[href*='/status/']").first
-                    href = await link_locator.get_attribute('href')
-                    if not href: continue
-                    tweet_url = "https://x.com" + href
-
-                    if tweet_url in PROCESSED_TWEETS: continue
+                for i in range(count):
+                    if processed_count >= DAILY_GOAL: break
                     
-                    button_group = article.locator("div[role='group']")
-                    like_locator = button_group.locator("button[aria-label*='Like']")
-                    repost_locator = button_group.locator("button[aria-label*='Repost']")
-                    like_text = await like_locator.inner_text() if await like_locator.count() > 0 else ""
-                    repost_text = await repost_locator.inner_text() if await repost_locator.count() > 0 else ""
-                    like_count = parse_count(like_text)
-                    repost_count = parse_count(repost_text)
+                    article = articles.nth(i)
+                    try:
+                        link_locator = article.locator("a[href*='/status/']").first
+                        href = await link_locator.get_attribute('href')
+                        if not href: continue
+                        tweet_url = "https://x.com" + href
 
-                    if like_count > LIKE_THRESHOLD or repost_count > REPOST_THRESHOLD:
-                        print(f"\n  -> Found high-value tweet: {tweet_url} (Likes: {like_count}, Reposts: {repost_count})")
-                        PROCESSED_TWEETS.add(tweet_url)
+                        if tweet_url in PROCESSED_TWEETS: continue
+                        
+                        button_group = article.locator("div[role='group']")
+                        like_locator = button_group.locator("button[aria-label*='Like']")
+                        repost_locator = button_group.locator("button[aria-label*='Repost']")
+                        like_text = await like_locator.inner_text() if await like_locator.count() > 0 else ""
+                        repost_text = await repost_locator.inner_text() if await repost_locator.count() > 0 else ""
+                        like_count = parse_count(like_text)
+                        repost_count = parse_count(repost_text)
 
-                        text_locator = article.locator('[data-testid="tweetText"]')
-                        original_tweet_text = await text_locator.inner_text() if await text_locator.count() > 0 else tweet_url
-                        
-                        # --- 核心逻辑变更：立即执行随机点赞 ---
-                        if random.random() < LIKE_PROBABILITY:
-                            if await like_locator.is_visible() and "Unlike" not in (await like_locator.get_attribute("aria-label")):
-                                    await like_locator.click()
-                                    print("  - ✅ ACTION: Liked tweet to train algorithm.")
-                                    await asyncio.sleep(random.uniform(1, 3))
-                            else: print("  - INFO: Tweet was already liked.")
-                        else: print("  - INFO: Skipped liking due to random chance.")
-                        
-                        # --- 然后再去执行耗时的AI摘要任务 ---
-                        summary_text = await get_summary_from_grok_site(context, tweet_url)
-                        
-                        if summary_text:
-                            is_added = await add_to_notion(summary_text, tweet_url, original_tweet_text)
-                            if is_added:
-                                processed_count += 1
-                                print(f"  - PROGRESS: {processed_count}/{DAILY_GOAL} summaries collected.")
-                        else:
-                            print("  - INFO: Failed to get summary from grok.com, moving to next tweet.")
-                except Exception as e:
-                    continue
+                        if like_count > LIKE_THRESHOLD or repost_count > REPOST_THRESHOLD:
+                            print(f"\n  -> Found high-value tweet: {tweet_url} (Likes: {like_count}, Reposts: {repost_count})")
+                            PROCESSED_TWEETS.add(tweet_url)
+
+                            text_locator = article.locator('[data-testid="tweetText"]')
+                            original_tweet_text = await text_locator.inner_text() if await text_locator.count() > 0 else tweet_url
+                            
+                            if random.random() < LIKE_PROBABILITY:
+                                if await like_locator.is_visible() and "Unlike" not in (await like_locator.get_attribute("aria-label")):
+                                        await like_locator.click()
+                                        print("  - ✅ ACTION: Liked tweet to train algorithm.")
+                                        await asyncio.sleep(random.uniform(1, 3))
+                                else: print("  - INFO: Tweet was already liked.")
+                            else: print("  - INFO: Skipped liking due to random chance.")
+                            
+                            summary_text = await get_summary_from_grok_site(context, tweet_url)
+                            
+                            if summary_text:
+                                is_added = await add_to_notion(summary_text, tweet_url, original_tweet_text)
+                                if is_added:
+                                    processed_count += 1
+                                    print(f"  - PROGRESS: {processed_count}/{DAILY_GOAL} summaries collected.")
+                            else:
+                                print("  - INFO: Failed to get summary from grok.com, moving to next tweet.")
+                    except Exception as e:
+                        # 忽略处理单条推文时的错误
+                        continue
         
+        # 将 except 和 finally 移到与 try 对齐的位置
+        except Exception as e:
+            print(f"❌ A FATAL ERROR occurred in the main process: {type(e).__name__} - {e}")
+
         finally:
             # --- 确保最后保存状态并关闭浏览器 ---
             if context:
                 print("\n--- Saving updated storage state... ---")
-                await context.storage_state(path="storage_state.json")
-                print("--- Updated storage state saved to storage_state.json. ---")
+                # 增加一个检查，确保文件存在才尝试保存，避免第一次运行出错
+                if os.path.exists("storage_state.json"):
+                    await context.storage_state(path="storage_state.json")
+                    print("--- Updated storage state saved to storage_state.json. ---")
             if browser:
                 await browser.close()
                 print("--- Browser closed. ---")
-    
-    print(f"\n--- Script finished. Total summaries collected: {processed_count} ---")
+
+        print(f"\n--- Script finished. Total summaries collected: {processed_count} ---")
+
+
 
 if __name__ == "__main__":
     notion = Client(auth=NOTION_API_KEY)
