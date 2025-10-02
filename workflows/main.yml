@@ -23,28 +23,36 @@ jobs:
       - name: Install Playwright browsers
         run: python -m playwright install --with-deps chromium
 
-      # --- 新增：从Supabase下载登录态 ---
+      # --- 更新：使用您验证过的requests逻辑下载登录态 ---
       - name: Download previous storage state from Supabase
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          # 使用一个小的Python脚本来下载文件
           python -c "
-          import os
-          from supabase import create_client, Client
-
+          import os, requests, json
+          
           url = os.environ.get('SUPABASE_URL')
-          key = os.environ.get('SUPABASE_KEY')
-          supabase: Client = create_client(url, key)
+          key = os.environ.get('SUPABASE_SERVICE_KEY')
+          bucket = 'aixtonotion' # 使用您已验证的bucket名
+          filename = 'storage_state.json'
+          
+          api_url = f'{url}/storage/v1/object/{bucket}/{filename}'
+          headers = {'Authorization': f'Bearer {key}', 'apikey': key}
           
           try:
-              with open('storage_state.json', 'wb+') as f:
-                  res = supabase.storage.from_('playwright-state').download('storage_state.json')
-                  f.write(res)
-              print('✅ Successfully downloaded storage_state.json from Supabase.')
+              print(f'Downloading from {api_url}...')
+              response = requests.get(api_url, headers=headers)
+              response.raise_for_status() # 如果HTTP状态码不是2xx，则抛出异常
+              
+              # 验证下载内容是否为有效JSON
+              json.loads(response.content)
+
+              with open(filename, 'wb') as f:
+                  f.write(response.content)
+              print(f'✅ Successfully downloaded and validated {filename}.')
           except Exception as e:
-              print(f'⚠️ Could not download storage_state.json (maybe first run?): {e}')
+              print(f'⚠️ Could not download or validate {filename} (maybe first run?): {e}')
           "
 
       # --- 运行主脚本 ---
@@ -53,36 +61,48 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: |
-          # 创建.env文件，但不再包含Cookie
+          # 创建.env文件
           echo "NOTION_API_KEY=${{ secrets.NOTION_API_KEY }}" > .env
           echo "NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}" >> .env
           
-          python aixtonotion.py
+          python xtonotionai.py # 使用您确认的文件名
 
-      # --- 新增：上传新的登录态到Supabase ---
+      # --- 更新：使用您验证过的requests逻辑上传新的登录态 ---
       - name: Upload new storage state to Supabase
         if: always() # 确保即使脚本失败也尝试上传
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python -c "
-          import os
-          from supabase import create_client, Client
+          import os, requests, json
 
           url = os.environ.get('SUPABASE_URL')
-          key = os.environ.get('SUPABASE_KEY')
-          supabase: Client = create_client(url, key)
+          key = os.environ.get('SUPABASE_SERVICE_KEY')
+          bucket = 'aixtonotion'
+          filename = 'storage_state.json'
           
-          try:
-              with open('storage_state.json', 'rb') as f:
-                  # 'file_options': {'cache-control': '3600', 'upsert': 'true'} 表示如果文件已存在，则覆盖它
-                  supabase.storage.from_('playwright-state').upload(
-                      'storage_state.json', 
-                      f, 
-                      {'cache-control': '3600', 'upsert': 'true'}
-                  )
-              print('✅ Successfully uploaded new storage_state.json to Supabase.')
-          except Exception as e:
-              print(f'❌ Failed to upload storage_state.json: {e}')
+          api_url = f'{url}/storage/v1/object/{bucket}/{filename}'
+          headers = {'Authorization': f'Bearer {key}', 'apikey': key}
+
+          if not os.path.exists(filename):
+              print(f'⚠️ {filename} not found locally, nothing to upload.')
+          else:
+              try:
+                  with open(filename, 'rb') as f:
+                      content = f.read()
+
+                  # 再次验证是有效的JSON
+                  json.loads(content.decode('utf-8'))
+                  
+                  # 使用 upsert 功能 (x-upsert头)
+                  headers['Content-Type'] = 'application/json'
+                  headers['x-upsert'] = 'true'
+
+                  response = requests.post(api_url, headers=headers, data=content)
+                  response.raise_for_status()
+                  
+                  print(f'✅ Successfully uploaded new {filename} to Supabase.')
+              except Exception as e:
+                  print(f'❌ Failed to upload {filename}: {e}')
           "
